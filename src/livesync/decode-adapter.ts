@@ -21,7 +21,7 @@ import {
   decrypt as decryptHkdf,
   HKDF_ENCRYPTED_PREFIX,
 } from 'octagonal-wheels/encryption/hkdf';
-import { decrypt as decryptV1 } from 'octagonal-wheels/encryption';
+import { decrypt as decryptV1, ENCRYPT_V3_PREFIX } from 'octagonal-wheels/encryption';
 import { hexStringToUint8Array } from 'octagonal-wheels/binary/hex';
 import type { CouchDbDocument } from './inspector.js';
 
@@ -117,13 +117,76 @@ function parseSaltBytes(rawSalt?: string): Uint8Array | undefined {
   return new TextEncoder().encode(rawSalt);
 }
 
-function looksEncryptedString(value: unknown): boolean {
+// Strict ciphertext-format validators.
+//
+// Policy (mirrors upstream commonlib `getEncryptionVersion` in
+// @vrtmrz/livesync-commonlib 0.1.21 `dist/pouchdb/encryption.js`): an explicit
+// `e_ === true` document flag is the authoritative encrypted signal and is
+// handled separately by callers. These prefix validators are only a legacy
+// fallback for documents without the flag, and must therefore match the exact
+// envelopes that octagonal-wheels actually emits — never a bare prefix such as
+// `[` or `%`, which legitimately occurs in plaintext (e.g. markdown links
+// beginning `[this guide](https://...)`).
+//
+// Data safety: when a string does not match a strict format it is treated as
+// plaintext. This is the same policy upstream applies to no-flag documents.
+// Genuinely flagged (`e_ === true`) documents keep failing closed elsewhere.
+
+// octagonal-wheels encryptV1: `["<base64 ciphertext>","<hex iv>","<hex salt>"]`
+// — IV is 16 bytes (12 semi-static + 4 nonce) -> 32 hex chars; salt is 16
+// bytes -> 32 hex chars.
+const V1_ENVELOPE_PATTERN = /^\["[A-Za-z0-9+/=]+","[0-9a-fA-F]{32}","[0-9a-fA-F]{32}"]$/;
+
+// octagonal-wheels encrypt (V2) and obfuscatePath emit
+// `|%| iv(32 hex) | salt(32 hex) | base64 data` (see decryptV2's
+// `substring(1, 33)` / `substring(33, 65)` slicing and the `isPathProbablyObfuscated`
+// `length > 64` check). IV is 16 bytes -> 32 hex chars, salt 16 bytes -> 32 hex
+// chars, i.e. `%` followed by exactly 64 hex chars then a base64 body.
+const V2_CIPHERTEXT_PATTERN = /^%[0-9a-fA-F]{64}[A-Za-z0-9+/=]+$/;
+
+/**
+ * Matches the exact V1 ciphertext envelope emitted by
+ * `octagonal-wheels/encryption` `encryptV1`: a JSON array of a base64
+ * ciphertext, a 32-hex-char IV, and a 32-hex-char salt, wrapped in brackets.
+ */
+export function looksLikeV1Envelope(value: unknown): value is string {
+  return typeof value === 'string' && V1_ENVELOPE_PATTERN.test(value);
+}
+
+/**
+ * Matches the exact legacy-V2 ciphertext format emitted by
+ * `octagonal-wheels/encryption` `encrypt` (and legacy path obfuscation):
+ * `%` + 32-hex IV + 32-hex salt + base64 body. The HKDF (`%=`) and V3 (`%~`)
+ * prefixes are checked separately and never reach this validator as ciphertext
+ * shapes; they are matched explicitly in {@link looksEncryptedString}.
+ */
+export function looksLikeV2Ciphertext(value: unknown): value is string {
+  return typeof value === 'string' && V2_CIPHERTEXT_PATTERN.test(value);
+}
+
+/**
+ * Legacy no-flag fallback heuristic. Returns true only for strings that match
+ * a strict, verified ciphertext envelope:
+ * - `/\:` prefix (encrypted metadata),
+ * - HKDF `%=` prefix,
+ * - V3 `%~` prefix,
+ * - a strict V1 envelope `["<base64>","<32-hex>","<32-hex>"]`,
+ * - a strict legacy-V2 body `%<64 hex><base64>`.
+ *
+ * Plain strings that merely start with `[` or `%` (e.g. markdown links) are
+ * NOT treated as encrypted. Documents explicitly flagged `e_ === true` are
+ * handled separately by callers regardless of this heuristic.
+ */
+export function looksEncryptedString(value: unknown): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
   return (
-    typeof value === 'string' &&
-    (value.startsWith(HKDF_ENCRYPTED_PREFIX) ||
-      value.startsWith(ENCRYPT_OLD_HEADER) ||
-      value.startsWith('[') ||
-      value.startsWith(ENCRYPTED_META_PREFIX))
+    value.startsWith(ENCRYPTED_META_PREFIX) ||
+    value.startsWith(HKDF_ENCRYPTED_PREFIX) ||
+    value.startsWith(ENCRYPT_V3_PREFIX) ||
+    looksLikeV1Envelope(value) ||
+    looksLikeV2Ciphertext(value)
   );
 }
 
