@@ -28,3 +28,4 @@ Thumbs.db
 # Agent configuration and skills
 .agents/
 .gsd/
+/doc/

@@ -210,7 +210,7 @@ state:
     await expect(loadConfig(undefined, {})).rejects.toThrow(ConfigValidationError);
     await expect(
       loadConfig(undefined, { LIVESYNC_COUCHDB_URL: 'http://127.0.0.1:5984' })
-    ).rejects.toThrow(/Configuration validation failed/);
+    ).rejects.toThrow(ConfigValidationError);
   });
 
   it('rejects CouchDB URLs with embedded credentials in environment variables', async () => {

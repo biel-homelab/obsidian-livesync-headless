@@ -164,7 +164,8 @@ vault:
   it('fails safely when required config is missing', () => {
     const res = runPackagedBinary(['status']);
     expect(res.status).toBe(1); // CONFIG_ERROR
-    expect(res.stderr).toContain('Missing required configuration file');
+    expect(res.stderr).toContain('Missing required configuration');
+    expect(res.stderr).toContain('--config');
   });
 
   it('fails safely with exit code 1 on unknown command', () => {

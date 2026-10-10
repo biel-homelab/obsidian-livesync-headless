@@ -195,6 +195,15 @@ export async function loadConfig(
     configDir = process.cwd();
   }
 
+  // Fail closed with actionable guidance when no configuration source supplied
+  // the required sections (no config file given and env vars absent).
+  if (!configFilePath && (rawConfig.remote === undefined || rawConfig.vault === undefined)) {
+    throw new ConfigValidationError(
+      'Missing required configuration: provide a config file (--config <path>) or set the ' +
+        'LIVESYNC_COUCHDB_* and LIVESYNC_VAULT_PATH environment variables.'
+    );
+  }
+
   // Validate strict schema structure before resolving or path checking
   const parseResult = LiveSyncConfigSchema.safeParse(rawConfig);
   if (!parseResult.success) {

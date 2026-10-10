@@ -678,7 +678,9 @@ export class CouchDbTestHarness {
       const chunkId = `h:newnote-${relativePath.replace(/[^A-Za-z0-9]/g, '')}-${index}`;
       await this.putDocument(dbName, chunkId, {
         type: 'leaf',
-        data: part,
+        // Upstream stores binary-note chunk data base64-encoded (decodeBinary →
+        // base64ToArrayBuffer for non-text documents); text ('plain') chunks stay raw.
+        data: Buffer.from(part, 'utf8').toString('base64'),
       });
       children.push(chunkId);
     }

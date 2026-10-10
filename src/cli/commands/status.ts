@@ -12,6 +12,7 @@ export interface StatusCommandOptions {
   json?: boolean;
   redactor?: SecretRedactor;
   stdout?: (msg: string) => void;
+  stderr?: (msg: string) => void;
 }
 
 export interface StatusReport {
@@ -132,12 +133,15 @@ export function formatStatusJson(report: StatusReport): string {
 export async function runStatusCommand(options: StatusCommandOptions): Promise<number> {
   const redactor = options.redactor ?? defaultRedactor;
   const writeStdout = options.stdout ?? ((msg: string) => process.stdout.write(msg));
+  const writeStderr = options.stderr ?? ((msg: string) => process.stderr.write(msg));
 
   let config;
   try {
     config = await loadConfig(options.configPath, process.env, redactor);
   } catch (err) {
     const errorMsg = (err as Error).message;
+    // Diagnostics go to stderr; stdout is reserved for command output/reports.
+    writeStderr(`Error loading configuration: ${errorMsg}\n`);
     if (options.json) {
       writeStdout(
         JSON.stringify({
@@ -146,8 +150,6 @@ export async function runStatusCommand(options: StatusCommandOptions): Promise<n
           message: errorMsg,
         }) + '\n'
       );
-    } else {
-      writeStdout(`Error loading configuration: ${errorMsg}\n`);
     }
     return EXIT_CODES.CONFIG_ERROR;
   }
