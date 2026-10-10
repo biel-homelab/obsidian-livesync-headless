@@ -62,5 +62,9 @@
       harness binary-chunk seeding (base64) and stale SEA binary + config-error
       stderr routing (commit dbaf60d).
 - [x] V.3 Mixed-client interop tests green (11/11 — protocol compatibility untouched).
-- [ ] V.4 Live smoke: deploy image to `boromir` stack, confirm daemon reaches
-      steady state without restart loop; log timings visible.
+- [x] V.4 Live smoke: deployed image to `boromir` stack — daemon reached
+      HEALTHY_BIDIRECTIONAL; no restart loop (RestartCount 0); 26 files
+      materialized; timings: probe ~400ms, inventory ~1s, decode ~10ms,
+      plan ~4ms, apply ~312ms. Extra fix found during smoke: pbkdf2salt
+      presence falsely signaled encryption (commit in Phase 4 follow-up);
+      rootless-Docker uid mapping required user "0:0" in the stack compose.
