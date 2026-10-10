@@ -18,14 +18,14 @@
 
 ## Phase 1 — Batched inventory (~45s → ~1s)
 
-- [ ] P1.1 `inventoryRemoteDocuments`: add `include_docs=true&conflicts=true` to
+- [x] P1.1 `inventoryRemoteDocuments`: add `include_docs=true&conflicts=true` to
       `_all_docs` paging; emit chunk docs with bodies.
-- [ ] P1.2 Build in-memory `Map<chunkId, doc>` chunk cache; wire a cache-first
+- [x] P1.2 Build in-memory `Map<chunkId, doc>` chunk cache; wire a cache-first
       `fetchChunk` in `SyncCoordinator` and `AutoArmCoordinator`; per-doc GET
       fallback on miss. `assembleChunks` interface unchanged.
-- [ ] P1.3 Fix pagination to `startkey_docid` instead of `skip=1`.
-- [ ] P1.4 Unit tests: cache hit/miss, fallback path, paging correctness.
-- [ ] P1.5 Integration: request-count assertion (≤ ~15 requests for 881-doc shape)
+- [x] P1.3 Fix pagination to `startkey_docid` instead of `skip=1`.
+- [x] P1.4 Unit tests: cache hit/miss, fallback path, paging correctness.
+- [x] P1.5 Integration: request-count assertion (≤ ~15 requests for 881-doc shape)
       using testcontainers CouchDB.
 
 ## Phase 2 — Stop doing startup work twice

@@ -30,7 +30,7 @@ import {
   computeFingerprint,
   type NegotiationResult,
 } from '../../livesync/negotiation.js';
-import { createChunkFetcher, inventoryRemoteDocuments } from '../../livesync/inventory.js';
+import { createCachedChunkFetcher, buildChunkCacheFromInventory, inventoryRemoteDocuments } from '../../livesync/inventory.js';
 import {
   decodeNoteLeaf,
   isNoteType,
@@ -492,11 +492,13 @@ export async function runPullCommand(options: PullCommandOptions): Promise<numbe
         credentials?.username || credentials?.password
           ? `Basic ${Buffer.from(`${credentials.username ?? ''}:${credentials.password ?? ''}`).toString('base64')}`
           : undefined;
-      const fetchChunk = createChunkFetcher(
+      const chunkCache = buildChunkCacheFromInventory(inventory);
+      const fetchChunk = createCachedChunkFetcher(
         guardedFetch,
         allowedBaseUrl,
         databaseName,
-        authHeader
+        authHeader,
+        chunkCache
       );
       const preferredTweaks = probeResult.milestoneDoc?.tweak_values?.PREFERRED ?? {};
       const decodeOptions = decodeOptionsFromAdmission(

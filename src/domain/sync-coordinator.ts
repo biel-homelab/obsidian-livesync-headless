@@ -12,7 +12,11 @@ import { installAtomically } from '../filesystem/atomic-reflector.js';
 import { quarantineVaultFile } from '../filesystem/quarantine-store.js';
 import { preflightSyncVault } from '../filesystem/vault-preflight.js';
 import { VaultScanner, type VaultFileEntry } from '../filesystem/vault-scanner.js';
-import { inventoryRemoteDocuments, createChunkFetcher } from '../livesync/inventory.js';
+import {
+  inventoryRemoteDocuments,
+  buildChunkCacheFromInventory,
+  createCachedChunkFetcher,
+} from '../livesync/inventory.js';
 import { decodeNoteLeaf, isNoteType, isReservedChunkId, type DecodeOptions } from '../livesync/decode-adapter.js';
 import { observationFromDecodeFailure, type PullObservation } from './pull-plan.js';
 import { buildSyncPlan, serializeSyncPlan, type SyncAction, type SerializedSyncPlan } from './sync-plan.js';
@@ -114,11 +118,13 @@ export class SyncCoordinator {
         ? `Basic ${Buffer.from(`${this.options.credentials.username ?? ''}:${this.options.credentials.password ?? ''}`).toString('base64')}`
         : undefined;
 
-    const fetchChunk = createChunkFetcher(
+    const chunkCache = buildChunkCacheFromInventory(inventory);
+    const fetchChunk = createCachedChunkFetcher(
       this.guardedFetch,
       this.options.baseUrl,
       this.options.databaseName,
-      authHeader
+      authHeader,
+      chunkCache
     );
 
     const decodeOptions: DecodeOptions = {

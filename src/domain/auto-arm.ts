@@ -20,7 +20,8 @@ import {
 } from '../livesync/negotiation.js';
 import {
   inventoryRemoteDocuments,
-  createChunkFetcher,
+  buildChunkCacheFromInventory,
+  createCachedChunkFetcher,
 } from '../livesync/inventory.js';
 import {
   decodeNoteLeaf,
@@ -263,11 +264,13 @@ export class AutoArmCoordinator {
           ).toString('base64')}`
         : undefined;
 
-    const fetchChunk = createChunkFetcher(
+    const chunkCache = buildChunkCacheFromInventory(inventory);
+    const fetchChunk = createCachedChunkFetcher(
       guardedFetch,
       allowedBaseUrl,
       databaseName,
-      authHeader
+      authHeader,
+      chunkCache
     );
 
     const preferredTweaks =

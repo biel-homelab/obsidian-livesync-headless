@@ -14,6 +14,55 @@ export function createChunkFetcher(
   return (id) => fetchDocumentIfExists<CouchDbDocument>(guardedFetch, baseUrl, databaseName, id, authHeader);
 }
 
+/**
+ * Cache-first variant of {@link createChunkFetcher} built from an inventory
+ * result. Chunk documents already carry their bodies when inventory was
+ * collected with `include_docs=true`, so the overwhelming majority of chunk
+ * reads are served from the in-memory cache; only cache misses fall back to a
+ * single-document GET (which then populates the cache).
+ */
+export function createCachedChunkFetcher(
+  guardedFetch: typeof globalThis.fetch,
+  baseUrl: URL,
+  databaseName: string,
+  authHeader: string | undefined,
+  chunkCache: Map<string, CouchDbDocument>
+): (id: string) => Promise<CouchDbDocument | null> {
+  return async (id) => {
+    const cached = chunkCache.get(id);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const document = await fetchDocumentIfExists<CouchDbDocument>(
+      guardedFetch,
+      baseUrl,
+      databaseName,
+      id,
+      authHeader
+    );
+    if (document) {
+      chunkCache.set(id, document);
+    }
+    return document;
+  };
+}
+
+/**
+ * Extract the chunk-id → document cache from an inventory result produced by
+ * {@link inventoryRemoteDocuments} (which emits chunk documents with bodies).
+ */
+export function buildChunkCacheFromInventory(
+  inventory: readonly InventoriedDocument[]
+): Map<string, CouchDbDocument> {
+  const cache = new Map<string, CouchDbDocument>();
+  for (const item of inventory) {
+    if (item.kind === 'chunk' && item.document) {
+      cache.set(item.id, item.document);
+    }
+  }
+  return cache;
+}
+
 const ALL_DOCS_PAGE_SIZE = 100;
 
 export interface InventoryCredentials {
@@ -22,7 +71,7 @@ export interface InventoryCredentials {
 }
 
 export type InventoriedDocument =
-  | { kind: 'chunk'; id: string }
+  | { kind: 'chunk'; id: string; document: CouchDbDocument }
   | { kind: 'tombstone'; id: string; rev: string }
   | { kind: 'document'; id: string; rev: string; document: CouchDbDocument };
 
@@ -32,6 +81,7 @@ interface AllDocsRow {
     readonly rev?: string;
     readonly deleted?: boolean;
   };
+  readonly doc?: CouchDbDocument;
 }
 
 function buildAuthHeader(credentials?: InventoryCredentials): string | undefined {
@@ -101,13 +151,22 @@ export async function inventoryRemoteDocuments(
 
   const collected: InventoriedDocument[] = [];
   let startKey: string | undefined;
+  let startKeyDocId: string | undefined;
 
   for (;;) {
     const allDocsUrl = new URL(`/${encodeURIComponent(databaseName)}/_all_docs`, baseUrl);
     allDocsUrl.searchParams.set('limit', String(ALL_DOCS_PAGE_SIZE));
+    allDocsUrl.searchParams.set('include_docs', 'true');
+    allDocsUrl.searchParams.set('conflicts', 'true');
     if (startKey !== undefined) {
       allDocsUrl.searchParams.set('startkey', JSON.stringify(startKey));
-      allDocsUrl.searchParams.set('skip', '1');
+      if (startKeyDocId !== undefined) {
+        // `startkey_docid` pins the resume position among rows sharing the same
+        // key, preventing O(n²) re-scans. CouchDB returns the boundary row
+        // itself again, so `skip=1` drops exactly that one repeated row.
+        allDocsUrl.searchParams.set('startkey_docid', JSON.stringify(startKeyDocId));
+        allDocsUrl.searchParams.set('skip', '1');
+      }
     }
 
     const response = await guardedFetch(allDocsUrl.toString(), {
@@ -140,7 +199,11 @@ export async function inventoryRemoteDocuments(
       }
 
       if (isReservedChunkId(row.id)) {
-        collected.push({ kind: 'chunk', id: row.id });
+        // Chunk bodies arrived with the page (include_docs=true); keep them so
+        // downstream assembly can be served from the in-memory chunk cache.
+        if (row.doc) {
+          collected.push({ kind: 'chunk', id: row.id, document: row.doc });
+        }
         continue;
       }
 
@@ -150,17 +213,49 @@ export async function inventoryRemoteDocuments(
         continue;
       }
 
-      const leaves = await fetchNoteLeaves(
-        guardedFetch,
-        baseUrl,
-        databaseName,
-        row.id,
-        authHeader
-      );
+      const doc = row.doc;
+      if (!doc) {
+        // Without a body we cannot classify the row; keep the historical
+        // fail-closed fallback to a per-doc conflict-leaf fetch.
+        const leaves = await fetchNoteLeaves(
+          guardedFetch,
+          baseUrl,
+          databaseName,
+          row.id,
+          authHeader
+        );
 
-      if (!leaves || leaves.length === 0) {
-        collected.push({ kind: 'tombstone', id: row.id, rev });
+        if (!leaves || leaves.length === 0) {
+          collected.push({ kind: 'tombstone', id: row.id, rev });
+          continue;
+        }
+
+        for (const leaf of leaves) {
+          if (leaf._deleted === true) {
+            collected.push({ kind: 'tombstone', id: row.id, rev: leaf._rev });
+            continue;
+          }
+          collected.push({ kind: 'document', id: row.id, rev: leaf._rev, document: leaf });
+        }
         continue;
+      }
+
+      // The winning body is already present. Only conflicted documents need
+      // the extra per-rev leaf fetches; non-conflicted notes are done.
+      const conflictRevs = conflictRevsFrom(doc);
+      const leaves: CouchDbDocument[] = [doc];
+      for (const rev of conflictRevs) {
+        const leaf = await fetchDocumentIfExists<CouchDbDocument>(
+          guardedFetch,
+          baseUrl,
+          databaseName,
+          row.id,
+          authHeader,
+          { rev }
+        );
+        if (leaf) {
+          leaves.push(leaf);
+        }
       }
 
       for (const leaf of leaves) {
@@ -176,11 +271,13 @@ export async function inventoryRemoteDocuments(
       break;
     }
 
-    const lastId = rows[rows.length - 1]?.id;
-    if (!lastId || lastId === startKey) {
+    const lastRow = rows[rows.length - 1];
+    const lastId = lastRow?.id;
+    if (!lastId || (lastId === startKey && lastId === startKeyDocId)) {
       break;
     }
     startKey = lastId;
+    startKeyDocId = lastId;
   }
 
   return collected;
