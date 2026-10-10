@@ -225,6 +225,7 @@ export async function runDaemonCommand(options: DaemonCommandOptions): Promise<n
       : undefined;
 
   // If in auto-arm mode, evaluate triggers, reset/pull if needed, validate, and auto-arm
+  let autoArmJustPulled = false;
   if (isAutoArm) {
     const autoArmCoordinator = new AutoArmCoordinator();
     const autoArmRes = await autoArmCoordinator.runWorkflow({
@@ -238,6 +239,14 @@ export async function runDaemonCommand(options: DaemonCommandOptions): Promise<n
       writeStderr(`ERROR: Auto-arm workflow failed: ${autoArmRes.error}\n`);
       return EXIT_CODES.CONFIG_ERROR;
     }
+
+    // The workflow just completed a fresh read-only pull (inventory + decode +
+    // materialize + checkpoint save) and validated vault/provenance integrity
+    // before returning success. The engine's initial catch-up pass would redo
+    // the exact same full inventory + decode, so skip it. Periodic/manual scans
+    // still run full passes; anything newer than the stored checkpoint arrives
+    // via the changes feed.
+    autoArmJustPulled = autoArmRes.triggered;
   }
 
   // Check write grant if write mode is requested (DAEM-01)
@@ -306,6 +315,7 @@ export async function runDaemonCommand(options: DaemonCommandOptions): Promise<n
     workerConcurrency: options.concurrency ?? (config.cli?.concurrency ?? 4),
     capability: capability ?? undefined,
     readOnly: !effectiveWrite,
+    skipInitialCatchUp: autoArmJustPulled,
     fetch: options.fetch,
   });
 

@@ -35,6 +35,12 @@ export interface ContinuousEngineOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly capability?: WriteCapability | ArmedSyncCapability;
   readonly readOnly?: boolean;
+  /**
+   * One-shot hint: skip the very first catch-up pass because a validated pull
+   * already completed in this same startup (auto-arm success path). Periodic
+   * and manual scans are unaffected — only the initial pass is skipped.
+   */
+  readonly skipInitialCatchUp?: boolean;
 }
 
 export class ContinuousEngine extends EventEmitter {
@@ -51,6 +57,7 @@ export class ContinuousEngine extends EventEmitter {
   private activeCapability: WriteCapability | ArmedSyncCapability | null = null;
   private remoteFingerprint = '';
   private isShuttingDown = false;
+  private initialCatchUpSkipped = false;
 
   constructor(private readonly options: ContinuousEngineOptions) {
     super();
@@ -278,6 +285,22 @@ export class ContinuousEngine extends EventEmitter {
   }
 
   private async executeCatchUpPass(): Promise<void> {
+    // Data-safety note: a stored checkpoint only proves the remote was at this
+    // update_seq at some point — it does NOT prove the local vault reflects it
+    // (a crash can land between file writes and the checkpoint commit). So the
+    // full sync pass is skipped ONLY on a one-shot, explicit hint from the
+    // daemon when the auto-arm workflow just completed a pull AND validated
+    // vault/provenance integrity in this same startup. Everything else (plain
+    // restarts, periodic scans, read-only startup) still runs the full pass.
+    if (this.options.skipInitialCatchUp && !this.initialCatchUpSkipped) {
+      this.initialCatchUpSkipped = true;
+      this.emit(
+        'warning',
+        'Initial catch-up sync skipped: auto-arm completed a validated pull in this startup.'
+      );
+      return;
+    }
+
     const infoUrl = new URL(`/${encodeURIComponent(this.options.databaseName)}`, this.options.baseUrl);
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (this.options.credentials?.username || this.options.credentials?.password) {

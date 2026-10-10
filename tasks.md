@@ -30,9 +30,9 @@
 
 ## Phase 2 — Stop doing startup work twice
 
-- [ ] P2.1 Daemon: skip/short-circuit second full sync pass when auto-arm just
+- [x] P2.1 Daemon: skip/short-circuit second full sync pass when auto-arm just
       completed a pull (reuse checkpoint freshness).
-- [ ] P2.2 Unit tests: daemon startup does one inventory pass after auto-arm.
+- [x] P2.2 Unit tests: daemon startup does one inventory pass after auto-arm.
 
 ## Phase 3 — Incremental pulls
 
