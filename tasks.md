@@ -58,9 +58,9 @@
 ## Validation (cross-phase)
 
 - [x] V.1 Full unit suite green.
-- [x] V.2 Integration suite (testcontainers) green — 63/66; the 3 failures
-      (pull-apply, pull-dry-run, packaged-binary) verified pre-existing at base
-      commit 32c7bc6, unrelated to this work.
+- [x] V.2 Integration suite (testcontainers) green — 66/66 after fixing
+      harness binary-chunk seeding (base64) and stale SEA binary + config-error
+      stderr routing (commit dbaf60d).
 - [x] V.3 Mixed-client interop tests green (11/11 — protocol compatibility untouched).
 - [ ] V.4 Live smoke: deploy image to `boromir` stack, confirm daemon reaches
       steady state without restart loop; log timings visible.
