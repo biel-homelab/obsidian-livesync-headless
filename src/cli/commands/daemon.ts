@@ -313,6 +313,7 @@ export async function runDaemonCommand(options: DaemonCommandOptions): Promise<n
     periodicScanIntervalMs: (options.periodicScanSec ?? (config.cli?.periodicScanSec ?? 300)) * 1000,
     debounceMs: options.debounceMs ?? (config.cli?.debounceMs ?? 300),
     workerConcurrency: options.concurrency ?? (config.cli?.concurrency ?? 4),
+    useIncrementalPull: config.cli?.incrementalPull ?? true,
     capability: capability ?? undefined,
     readOnly: !effectiveWrite,
     skipInitialCatchUp: autoArmJustPulled,

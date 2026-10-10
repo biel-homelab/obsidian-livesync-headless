@@ -60,6 +60,7 @@ export const CliConfigSchema = z
     periodicScanSec: z.number().int().positive().optional(),
     concurrency: z.number().int().positive().optional(),
     debounceMs: z.number().int().positive().optional(),
+    incrementalPull: z.boolean().default(true),
   })
   .strict();
 

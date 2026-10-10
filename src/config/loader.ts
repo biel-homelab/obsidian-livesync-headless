@@ -114,6 +114,7 @@ function extractEnvConfig(env: NodeJS.ProcessEnv): Record<string, any> {
   const periodicScanSec = parseIntegerEnv(env.LIVESYNC_PERIODIC_SCAN_SEC);
   const concurrency = parseIntegerEnv(env.LIVESYNC_CONCURRENCY);
   const debounceMs = parseIntegerEnv(env.LIVESYNC_DEBOUNCE_MS);
+  const incrementalPull = parseBooleanEnv(env.LIVESYNC_INCREMENTAL_PULL);
 
   const cli: Record<string, any> = {};
   if (modeVal !== undefined) {
@@ -125,6 +126,7 @@ function extractEnvConfig(env: NodeJS.ProcessEnv): Record<string, any> {
   if (periodicScanSec !== undefined) cli.periodicScanSec = periodicScanSec;
   if (concurrency !== undefined) cli.concurrency = concurrency;
   if (debounceMs !== undefined) cli.debounceMs = debounceMs;
+  if (incrementalPull !== undefined) cli.incrementalPull = incrementalPull;
   if (Object.keys(cli).length > 0) envConfig.cli = cli;
 
   return envConfig;

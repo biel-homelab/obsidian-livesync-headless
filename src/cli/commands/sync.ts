@@ -239,6 +239,7 @@ export async function runSyncCommand(options: SyncCommandOptions): Promise<numbe
           : undefined,
       minimumChunkSize: 20,
       remoteFingerprint: negotiation.remoteFingerprint,
+      useIncrementalPull: config.cli?.incrementalPull ?? true,
       updateSeq: probeResult.databaseInfo.updateSeq ? String(probeResult.databaseInfo.updateSeq) : undefined,
     });
 

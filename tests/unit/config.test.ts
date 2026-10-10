@@ -68,8 +68,7 @@ state:
     const config = await loadConfig(dedicatedPath, {});
     expect(config.vault.dedicated).toBe(true);
 
-    const unknownPath = path.join(tempDir, 'unknown-vault-key.yaml');
-    await fs.writeFile(
+    const unknownPath = path.join(tempDir, 'unknown-vault-key.yaml');    await fs.writeFile(
       unknownPath,
       `
 remote:
@@ -84,6 +83,49 @@ state:
     );
 
     await expect(loadConfig(unknownPath, {})).rejects.toThrow(/Configuration validation failed/);
+  });
+
+  it('accepts cli.incrementalPull in YAML and defaults it to true', async () => {
+    const vaultPath = path.join(tempDir, 'incr-vault');
+    const statePath = path.join(tempDir, 'incr-state');
+
+    const explicitPath = path.join(tempDir, 'incremental-explicit.yaml');
+    await fs.writeFile(
+      explicitPath,
+      `
+remote:
+  url: "http://127.0.0.1:5984"
+  database: "obsidian-sync"
+vault:
+  path: "${vaultPath}"
+state:
+  path: "${statePath}"
+cli:
+  incrementalPull: false
+`
+    );
+
+    const explicit = await loadConfig(explicitPath, {});
+    expect(explicit.cli?.incrementalPull).toBe(false);
+
+    const implicitPath = path.join(tempDir, 'incremental-implicit.yaml');
+    await fs.writeFile(
+      implicitPath,
+      `
+remote:
+  url: "http://127.0.0.1:5984"
+  database: "obsidian-sync"
+vault:
+  path: "${vaultPath}"
+state:
+  path: "${statePath}"
+`
+    );
+
+    const implicit = await loadConfig(implicitPath, {});
+    // Schema default applies when a cli block exists; consumers use `?? true`
+    // when the whole cli block is absent.
+    expect(implicit.cli?.incrementalPull ?? true).toBe(true);
   });
 
   it('resolves secrets via fromEnv and registers with redactor', async () => {

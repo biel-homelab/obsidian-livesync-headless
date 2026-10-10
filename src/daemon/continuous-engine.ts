@@ -32,6 +32,13 @@ export interface ContinuousEngineOptions {
   readonly periodicScanIntervalMs?: number;
   readonly debounceMs?: number;
   readonly workerConcurrency?: number;
+  /**
+   * Phase 3: enable incremental pulls via the persisted `lastUpdateSeq`
+   * checkpoint in pull-only passes (periodic scans, read-only catch-up).
+   * Bidirectional passes and explicit `updateSeq` callers always use a full
+   * inventory. Default: true.
+   */
+  readonly useIncrementalPull?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly capability?: WriteCapability | ArmedSyncCapability;
   readonly readOnly?: boolean;
@@ -126,6 +133,7 @@ export class ContinuousEngine extends EventEmitter {
       customChunkSize: options.customChunkSize,
       minimumChunkSize: options.minimumChunkSize,
       remoteFingerprint: '', // populated in preflight
+      useIncrementalPull: options.useIncrementalPull,
       fetch: options.fetch,
     });
 
@@ -253,6 +261,7 @@ export class ContinuousEngine extends EventEmitter {
             customChunkSize,
             minimumChunkSize: this.options.minimumChunkSize,
             remoteFingerprint: this.remoteFingerprint,
+            useIncrementalPull: this.options.useIncrementalPull,
             fetch: this.options.fetch,
           });
         } catch {
@@ -324,6 +333,12 @@ export class ContinuousEngine extends EventEmitter {
       if (!result.ok && result.conflicts.length > 0) {
         this.emit('conflicts', result.conflicts);
       }
+      // With incremental pulls enabled, the coordinator already persisted the
+      // _changes last_seq it consumed (Stage 6) — never clobber it with the
+      // stale probe-time sequence captured before the pass.
+      if (result.incrementalLastSeq === undefined) {
+        this.saveProbeCheckpoint(updateSeq);
+      }
     } else {
       const readOnlyCoordinator = new SyncCoordinator({
         baseUrl: this.options.baseUrl,
@@ -343,15 +358,32 @@ export class ContinuousEngine extends EventEmitter {
         customChunkSize: this.options.customChunkSize,
         minimumChunkSize: this.options.minimumChunkSize,
         remoteFingerprint: this.remoteFingerprint,
-        updateSeq,
+        // With incremental pulls enabled the coordinator resolves the pull
+        // checkpoint itself (and falls back to a full inventory on first
+        // contact), so the probe-time update_seq would only force a redundant
+        // full pass. When incremental is disabled, keep the probe-time pin.
+        updateSeq: this.options.useIncrementalPull === false ? updateSeq : undefined,
+        useIncrementalPull: this.options.useIncrementalPull,
         fetch: this.options.fetch,
       });
       const result = await readOnlyCoordinator.sync();
       if (!result.ok && result.conflicts.length > 0) {
         this.emit('conflicts', result.conflicts);
       }
+      // Same rule for the read-only pass: incremental passes already advanced
+      // the checkpoint to the consumed last_seq.
+      if (result.incrementalLastSeq === undefined) {
+        this.saveProbeCheckpoint(updateSeq);
+      }
     }
+  }
 
+  /**
+   * Persist the probe-time update sequence captured before a catch-up pass.
+   * Only used by full-inventory passes; an incremental pass persists its own
+   * consumed `last_seq` inside SyncCoordinator Stage 6.
+   */
+  private saveProbeCheckpoint(updateSeq: string): void {
     if (updateSeq !== '0' || this.remoteFingerprint) {
       const db = openDatabase(this.options.statePath);
       try {

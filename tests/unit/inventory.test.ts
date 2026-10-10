@@ -1,9 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   inventoryRemoteDocuments,
+  inventoryChangedDocuments,
   createCachedChunkFetcher,
   buildChunkCacheFromInventory,
 } from '../../src/livesync/inventory.js';
+import { AuthenticationRequiredError } from '../../src/livesync/inspector.js';
 import type { CouchDbDocument } from '../../src/livesync/inspector.js';
 
 const baseUrl = new URL('http://127.0.0.1:5984');
@@ -334,5 +336,172 @@ describe('buildChunkCacheFromInventory (Unit)', () => {
     const inventory = [{ kind: 'tombstone', id: 'Gone.md', rev: '1-x' }];
     const cache = buildChunkCacheFromInventory(inventory as never);
     expect(cache.size).toBe(0);
+  });
+});
+
+describe('inventoryChangedDocuments (Unit, Phase 3)', () => {
+  function changesResponse(
+    results: Record<string, unknown>[],
+    lastSeq?: string | number
+  ): Response {
+    return new Response(
+      JSON.stringify({ results, ...(lastSeq !== undefined ? { last_seq: lastSeq } : {}) }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+  }
+
+  function changeRow(
+    id: string,
+    seq: string | number,
+    options?: { deleted?: boolean; doc?: CouchDbDocument }
+  ): Record<string, unknown> {
+    return {
+      seq,
+      id,
+      changes: [{ rev: options?.doc?._rev ?? '1-x' }],
+      ...(options?.deleted ? { deleted: true } : {}),
+      ...(options?.doc ? { doc: options.doc } : {}),
+    };
+  }
+
+  it('queries _changes with since, style=all_docs, include_docs, conflicts and limit', async () => {
+    const requests: string[] = [];
+    const mockFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const urlStr = input.toString();
+      requests.push(urlStr);
+      return changesResponse([], 'seq-final');
+    });
+
+    const result = await inventoryChangedDocuments(
+      mockFetch as unknown as typeof globalThis.fetch,
+      baseUrl,
+      databaseName,
+      'seq-42'
+    );
+
+    expect(requests.length).toBe(1);
+    const url = new URL(requests[0]);
+    expect(url.pathname).toBe(`/${databaseName}/_changes`);
+    expect(url.searchParams.get('since')).toBe('seq-42');
+    expect(url.searchParams.get('style')).toBe('all_docs');
+    expect(url.searchParams.get('include_docs')).toBe('true');
+    expect(url.searchParams.get('conflicts')).toBe('true');
+    expect(url.searchParams.get('limit')).toBe('100');
+    // Empty feed still reports the current position via last_seq.
+    expect(result.lastSeq).toBe('seq-final');
+    expect(result.collected).toEqual([]);
+  });
+
+  it('classifies changed note and chunk rows identically to the full inventory', async () => {
+    const chunk = chunkDoc('h:newchunk', 'C');
+    const note = noteDoc('NoteB.md', 'beta');
+    const mockFetch = vi.fn(async () =>
+      changesResponse(
+        [
+          changeRow('h:newchunk', 11, { doc: chunk }),
+          changeRow('NoteB.md', 12, { doc: note }),
+          changeRow('Gone.md', 13, { deleted: true }),
+        ],
+        13
+      )
+    );
+
+    const result = await inventoryChangedDocuments(
+      mockFetch as unknown as typeof globalThis.fetch,
+      baseUrl,
+      databaseName,
+      'seq-10'
+    );
+
+    expect(result.collected).toEqual([
+      { kind: 'chunk', id: 'h:newchunk', document: chunk },
+      { kind: 'document', id: 'NoteB.md', rev: '1-noterev', document: note },
+      { kind: 'tombstone', id: 'Gone.md', rev: '1-x' },
+    ]);
+    expect(result.lastSeq).toBe('13');
+  });
+
+  it('pages via the last row seq until the feed is exhausted and reports last_seq at the end', async () => {
+    const requests: string[] = [];
+    const mkNote = (n: number) => noteDoc(`Note${n}.md`, `body-${n}`);
+    const mockFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const urlStr = input.toString();
+      requests.push(urlStr);
+      const url = new URL(urlStr);
+      const since = url.searchParams.get('since');
+      if (since === 'seq-0') {
+        // Full page of 100 rows -> must re-page from the last row seq.
+        const rows = Array.from({ length: 100 }, (_, i) =>
+          changeRow(`Filler${String(i).padStart(3, '0')}.md`, i + 1, { doc: mkNote(i) })
+        );
+        return changesResponse(rows, 100);
+      }
+      // Second page: one row, then exhausted.
+      return changesResponse([changeRow('NoteFinal.md', 101, { doc: mkNote(999) })], 101);
+    });
+
+    const result = await inventoryChangedDocuments(
+      mockFetch as unknown as typeof globalThis.fetch,
+      baseUrl,
+      databaseName,
+      'seq-0'
+    );
+
+    expect(requests.length).toBe(2);
+    expect(new URL(requests[1]).searchParams.get('since')).toBe('100');
+    expect(result.lastSeq).toBe('101');
+    expect(result.collected.length).toBe(101);
+  });
+
+  it('throws on HTTP 400 so callers can fall back to a full inventory', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'bad_request', reason: 'Invalid since' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+
+    await expect(
+      inventoryChangedDocuments(
+        mockFetch as unknown as typeof globalThis.fetch,
+        baseUrl,
+        databaseName,
+        'bogus-seq'
+      )
+    ).rejects.toThrow(/HTTP 400/);
+  });
+
+  it('throws AuthenticationRequiredError on 401/403', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
+    );
+
+    await expect(
+      inventoryChangedDocuments(
+        mockFetch as unknown as typeof globalThis.fetch,
+        baseUrl,
+        databaseName,
+        'seq-1'
+      )
+    ).rejects.toThrow(AuthenticationRequiredError);
+  });
+
+  it('sends Authorization header when credentials are supplied', async () => {
+    let authHeader: string | undefined;
+    const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      authHeader = headers.Authorization;
+      return changesResponse([], 'seq-2');
+    });
+
+    await inventoryChangedDocuments(
+      mockFetch as unknown as typeof globalThis.fetch,
+      baseUrl,
+      databaseName,
+      'seq-1',
+      { username: 'user', password: 'pass' }
+    );
+
+    expect(authHeader).toBe(`Basic ${Buffer.from('user:pass').toString('base64')}`);
   });
 });

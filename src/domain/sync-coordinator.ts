@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { openDatabase } from '../storage/sqlite.js';
 import { ProvenanceRepository } from '../storage/provenance-repo.js';
 import { QuarantineRepository } from '../storage/quarantine-repo.js';
-import { CheckpointRepository } from '../storage/checkpoint-repo.js';
+import { CheckpointRepository, type CheckpointRecord } from '../storage/checkpoint-repo.js';
 import { WriteGrantRepo } from '../storage/write-grant-repo.js';
 import { cleanupOrphanStagingFiles } from '../filesystem/orphan-cleanup.js';
 import { installAtomically } from '../filesystem/atomic-reflector.js';
@@ -14,6 +14,7 @@ import { preflightSyncVault } from '../filesystem/vault-preflight.js';
 import { VaultScanner, type VaultFileEntry } from '../filesystem/vault-scanner.js';
 import {
   inventoryRemoteDocuments,
+  inventoryChangedDocuments,
   buildChunkCacheFromInventory,
   createCachedChunkFetcher,
 } from '../livesync/inventory.js';
@@ -24,6 +25,7 @@ import { PushAdapter } from '../livesync/push-adapter.js';
 import { DeletionWriter } from '../livesync/deletion-writer.js';
 import type { WriteCapability, ArmedSyncCapability } from '../security/capabilities.js';
 import { createArmedGuardedFetch } from '../security/transport-guard.js';
+import { logger } from '../diagnostics/logger.js';
 
 export interface SyncCoordinatorOptions {
   readonly baseUrl: URL;
@@ -44,6 +46,15 @@ export interface SyncCoordinatorOptions {
   readonly minimumChunkSize?: number;
   readonly remoteFingerprint: string;
   readonly updateSeq?: string;
+  /**
+   * Enable incremental pulls via `GET /{db}/_changes?since=<checkpoint>` when a
+   * persisted checkpoint exists for `remoteFingerprint` (Phase 3). When no
+   * checkpoint exists, when the `since` token is rejected by the remote, or
+   * when the incremental query fails for any reason, the pass falls back to a
+   * full inventory. Default: true (full inventory remains the first-contact
+   * and fail-safe path).
+   */
+  readonly useIncrementalPull?: boolean;
   readonly fetch?: typeof globalThis.fetch;
 }
 
@@ -54,6 +65,12 @@ export interface SyncExecutionResult {
   readonly errors: string[];
   readonly conflicts: string[];
   readonly converged: boolean;
+  /**
+   * When the pull phase ran incrementally from the persisted checkpoint, the
+   * last update sequence consumed by the `_changes` query. Persisted by Stage 6
+   * only after a successful apply; undefined for full-inventory passes.
+   */
+  readonly incrementalLastSeq?: string;
 }
 
 export class SyncCoordinator {
@@ -106,12 +123,68 @@ export class SyncCoordinator {
     }
 
     // Stage 2: Remote Catch-Up (Pull phase inventory and observations)
-    const inventory = await inventoryRemoteDocuments(
-      this.guardedFetch,
-      this.options.baseUrl,
-      this.options.databaseName,
-      this.options.credentials
-    );
+    //
+    // Data-safety: the incremental path changes only the document source. The
+    // classification (collectRowsInto), decode (buildObservations), planning
+    // (buildSyncPlan), and apply stages are byte-for-byte identical between
+    // incremental and full passes. Any incremental failure falls back to a
+    // full inventory rather than failing the pass.
+    let inventory: Awaited<ReturnType<typeof inventoryRemoteDocuments>> | undefined;
+    let incrementalLastSeq: string | undefined;
+
+    // Incremental pulls are only enabled for pull-only passes. A bidirectional
+    // pass must observe the COMPLETE remote state to plan pushes: a locally
+    // modified file whose remote document is unchanged since the checkpoint
+    // produces no `_changes` row, so an incremental source would silently drop
+    // its push-update/push-delete/conflict decision. An explicit `updateSeq`
+    // also forces a full inventory: the caller asked for a checkpoint pinned at
+    // the probe-time sequence.
+    const incrementalEligible =
+      this.options.useIncrementalPull !== false &&
+      this.options.pullOnly === true &&
+      !this.options.updateSeq;
+
+    if (incrementalEligible) {
+      const checkpointDb = openDatabase(this.options.statePath);
+      let checkpoint: CheckpointRecord | null = null;
+      try {
+        const checkpointRepo = new CheckpointRepository(checkpointDb);
+        checkpoint = checkpointRepo.getCheckpoint(this.options.remoteFingerprint);
+      } finally {
+        checkpointDb.close();
+      }
+
+      if (checkpoint && checkpoint.lastUpdateSeq.length > 0) {
+        try {
+          const changes = await inventoryChangedDocuments(
+            this.guardedFetch,
+            this.options.baseUrl,
+            this.options.databaseName,
+            checkpoint.lastUpdateSeq,
+            this.options.credentials
+          );
+          inventory = changes.collected;
+          incrementalLastSeq = changes.lastSeq;
+        } catch (err) {
+          // Fail-safe: an opaque `since` token rejected by the remote (HTTP
+          // 400), a network error, or any other _changes failure degrades to a
+          // full inventory pass instead of failing the sync.
+          logger.warn('Incremental pull failed; falling back to full inventory', {
+            error: (err as Error).message,
+          });
+          incrementalLastSeq = undefined;
+        }
+      }
+    }
+
+    if (inventory === undefined) {
+      inventory = await inventoryRemoteDocuments(
+        this.guardedFetch,
+        this.options.baseUrl,
+        this.options.databaseName,
+        this.options.credentials
+      );
+    }
 
     const authHeader =
       this.options.credentials?.username || this.options.credentials?.password
@@ -138,6 +211,21 @@ export class SyncCoordinator {
     };
 
     const observations = await this.buildObservations(inventory, decodeOptions);
+
+    // Safety valve (Phase 3): `block` observations are decode failures the
+    // planner cannot express as actions. In a full-inventory pass they are
+    // re-examined on every scan; in an incremental pass advancing the
+    // checkpoint past them would lose them permanently. Never persist an
+    // incremental last_seq consumed over a block observation — the next pass
+    // re-runs the _changes query from the previous checkpoint instead.
+    const sawBlockObservations = observations.some((obs) => obs.kind === 'block');
+    if (sawBlockObservations && incrementalLastSeq !== undefined) {
+      logger.warn(
+        'Incremental pull produced block observations; checkpoint will not advance past them',
+        { blocks: observations.filter((obs) => obs.kind === 'block').length }
+      );
+      incrementalLastSeq = undefined;
+    }
 
     // Stage 3: Local Vault Scan
     const scanner = new VaultScanner();
@@ -183,6 +271,7 @@ export class SyncCoordinator {
         errors,
         conflicts,
         converged: conflicts.length === 0 && serializedPlan.summary.totalActions === serializedPlan.summary.noops,
+        incrementalLastSeq,
       };
     }
 
@@ -372,10 +461,17 @@ export class SyncCoordinator {
       }
 
       // Stage 6: Update Checkpoint (SYNC-09)
-      if (this.options.updateSeq) {
+      //
+      // Partial-failure semantics: the checkpoint is only ever written after
+      // the full apply loop completed, so it is never advanced over a partial
+      // failure. An incremental pass persists the `_changes` `last_seq`
+      // consumed by this pass; a full-inventory pass persists the caller's
+      // `updateSeq` (probe-time snapshot), never the incremental token.
+      const seqToPersist = incrementalLastSeq ?? this.options.updateSeq;
+      if (seqToPersist) {
         checkpointRepo.saveCheckpoint({
           remoteFingerprint: this.options.remoteFingerprint,
-          lastUpdateSeq: this.options.updateSeq,
+          lastUpdateSeq: seqToPersist,
           completedAt: new Date().toISOString(),
         });
       }
@@ -390,6 +486,7 @@ export class SyncCoordinator {
       errors,
       conflicts,
       converged: errors.length === 0,
+      incrementalLastSeq,
     };
   }
 

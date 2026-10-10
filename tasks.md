@@ -36,14 +36,14 @@
 
 ## Phase 3 — Incremental pulls
 
-- [ ] P3.1 `SyncCoordinator`: use persisted `lastUpdateSeq` +
+- [x] P3.1 `SyncCoordinator`: use persisted `lastUpdateSeq` +
       `_changes?since=...&style=all_docs` for steady-state pulls; full inventory
       only on first contact or checkpoint invalidation.
-- [ ] P3.2 Periodic scans use incremental path; full scan only after errors or
+- [x] P3.2 Periodic scans use incremental path; full scan only after errors or
       identity change.
-- [ ] P3.3 Unit tests: since-token use, invalidation fallback, checkpoint advance
+- [x] P3.3 Unit tests: since-token use, invalidation fallback, checkpoint advance
       only after commit.
-- [ ] P3.4 Integration: incremental pull applies only new changes; no history purge.
+- [x] P3.4 Integration: incremental pull applies only new changes; no history purge.
 
 ## Phase 4 — Safety & operability
 

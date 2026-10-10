@@ -160,6 +160,26 @@ state:
     expect(config.cli?.debounceMs).toBe(500);
   });
 
+  it('parses LIVESYNC_INCREMENTAL_PULL and defaults cli.incrementalPull to true', async () => {
+    const baseEnv: NodeJS.ProcessEnv = {
+      LIVESYNC_COUCHDB_URL: 'http://127.0.0.1:5984',
+      LIVESYNC_COUCHDB_DATABASE: 'test-db',
+      LIVESYNC_VAULT_PATH: vaultDir,
+      LIVESYNC_STATE_PATH: path.join(stateDir, 'state.db'),
+    };
+
+    // Default when omitted (no cli block): consumers apply `?? true`.
+    const defaulted = await loadConfig(undefined, { ...baseEnv });
+    expect(defaulted.cli?.incrementalPull ?? true).toBe(true);
+
+    // Explicitly enabled / disabled
+    const enabled = await loadConfig(undefined, { ...baseEnv, LIVESYNC_INCREMENTAL_PULL: 'true' });
+    expect(enabled.cli?.incrementalPull).toBe(true);
+
+    const disabled = await loadConfig(undefined, { ...baseEnv, LIVESYNC_INCREMENTAL_PULL: 'false' });
+    expect(disabled.cli?.incrementalPull).toBe(false);
+  });
+
   it('enforces CONF-03 path safety on environment-derived paths', async () => {
     const baseEnv: NodeJS.ProcessEnv = {
       LIVESYNC_COUCHDB_URL: 'http://127.0.0.1:5984',

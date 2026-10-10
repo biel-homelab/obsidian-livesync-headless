@@ -299,7 +299,9 @@ export class FileReconciler {
       }
 
       if (!response.ok) {
-        return null;
+        throw new Error(
+          `Failed to fetch remote document '${relativePath}': HTTP ${response.status} ${response.statusText}`
+        );
       }
 
       const doc = await response.json() as Record<string, unknown>;
@@ -333,8 +335,15 @@ export class FileReconciler {
         contentSha256: hash,
         deleted: decoded.deleted,
       };
-    } catch {
-      return null;
+    } catch (err) {
+      // Data safety: a failed remote read (network error, auth failure, HTTP
+      // error) must be distinguishable from a genuine 404. Returning null here
+      // would classify the document as deleted/absent and let the checkpoint
+      // advance over a change that was never applied. Rethrow so the caller
+      // records a failed reconciliation instead.
+      throw new Error(
+        `Remote read for '${relativePath}' failed: ${(err as Error).message}`
+      );
     }
   }
 
