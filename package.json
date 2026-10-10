@@ -1,6 +1,6 @@
 {
   "name": "obsidian-livesync-headless",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Headless CLI client for Obsidian Self-hosted LiveSync",
   "type": "module",
   "main": "dist/index.js",

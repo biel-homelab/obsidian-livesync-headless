@@ -82,7 +82,7 @@ Options:
   -v, --version               Show version and compatibility information
 `;
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.5.0';
 
 export function parseCliArgs(args: string[] = process.argv.slice(2)): {
   command?: string;

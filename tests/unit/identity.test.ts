@@ -22,7 +22,7 @@ describe('BuildIdentity Diagnostic Engine', () => {
     const identity = getBuildIdentity();
 
     expect(identity.name).toBe('obsidian-livesync-headless');
-    expect(identity.version).toBe('0.1.0');
+    expect(identity.version).toBe('0.5.0');
     expect(identity.liveSyncCompatibility).toBe('1.0.23');
     expect(identity.commonlibVersion).toBe('0.1.21');
     expect(identity.targetCouchDbVersion).toBe('3.5.2');
@@ -52,7 +52,7 @@ describe('BuildIdentity Diagnostic Engine', () => {
     const humanOutput = formatIdentityHuman(identity);
 
     expect(humanOutput).toContain('OBSIDIAN LIVESYNC HEADLESS — BUILD & COMPATIBILITY IDENTITY');
-    expect(humanOutput).toContain('Client Version:           v0.1.0');
+    expect(humanOutput).toContain('Client Version:           v0.5.0');
     expect(humanOutput).toContain('LiveSync Compatibility:   1.0.23');
     expect(humanOutput).toContain('Commonlib Version:        0.1.21');
     expect(humanOutput).toContain('Target CouchDB:           3.5.2');
@@ -72,7 +72,7 @@ describe('BuildIdentity Diagnostic Engine', () => {
 
     expect(parsed.type).toBe('version_identity');
     expect(parsed.name).toBe('obsidian-livesync-headless');
-    expect(parsed.version).toBe('0.1.0');
+    expect(parsed.version).toBe('0.5.0');
     expect(parsed.liveSyncCompatibility).toBe('1.0.23');
     expect(parsed.commonlibVersion).toBe('0.1.21');
     expect(parsed.targetCouchDbVersion).toBe('3.5.2');

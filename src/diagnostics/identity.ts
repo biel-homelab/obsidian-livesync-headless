@@ -34,7 +34,7 @@ function detectSea(): boolean {
 export function getBuildIdentity(): BuildIdentity {
   return {
     name: 'obsidian-livesync-headless',
-    version: '0.1.0',
+    version: '0.5.0',
     liveSyncCompatibility: '1.0.23',
     commonlibVersion: '0.1.21',
     targetCouchDbVersion: '3.5.2',

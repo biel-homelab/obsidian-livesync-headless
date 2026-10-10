@@ -90,7 +90,7 @@ describe('Standalone SEA Packaged Binary Integration', () => {
     const parsed = JSON.parse(res.stdout.trim());
     expect(parsed.type).toBe('version_identity');
     expect(parsed.name).toBe('obsidian-livesync-headless');
-    expect(parsed.version).toBe('0.1.0');
+    expect(parsed.version).toBe('0.5.0');
     expect(parsed.liveSyncCompatibility).toBe('1.0.23');
     expect(parsed.commonlibVersion).toBe('0.1.21');
     expect(parsed.targetCouchDbVersion).toBe('3.5.2');
