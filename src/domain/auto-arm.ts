@@ -306,10 +306,14 @@ export class AutoArmCoordinator {
     // Fail-closed BEFORE any cleanup: when the remote is encrypted (e_ flags
     // or strict ciphertext shapes) and no passphrase is configured, every
     // decode would fail anyway. Abort with a clear message now.
+    //
+    // Note: a pbkdf2salt in the sync-parameters document is NOT an encryption
+    // signal — upstream provisions the salt even for unencrypted databases.
+    // Encryption is indicated by the `encrypt` tweak, `e_` flags on documents,
+    // or strict ciphertext shapes on actual content.
     if (!config.resolvedSecrets.encryptionPassphrase) {
       const remoteLooksEncrypted =
         encrypt === true ||
-        Boolean(probeResult.syncParamsDoc?.pbkdf2salt) ||
         inventory.some(
           (item) =>
             (item.kind === 'chunk' &&
