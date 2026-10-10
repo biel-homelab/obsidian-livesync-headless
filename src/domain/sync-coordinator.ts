@@ -26,6 +26,7 @@ import { DeletionWriter } from '../livesync/deletion-writer.js';
 import type { WriteCapability, ArmedSyncCapability } from '../security/capabilities.js';
 import { createArmedGuardedFetch } from '../security/transport-guard.js';
 import { logger } from '../diagnostics/logger.js';
+import { createStageTimer } from '../diagnostics/stage-timer.js';
 
 export interface SyncCoordinatorOptions {
   readonly baseUrl: URL;
@@ -56,6 +57,12 @@ export interface SyncCoordinatorOptions {
    */
   readonly useIncrementalPull?: boolean;
   readonly fetch?: typeof globalThis.fetch;
+  /**
+   * Optional stage-timing sink (Phase 4.3). When omitted the coordinator logs
+   * `[timing]` stage lines through the shared diagnostics logger. Inject a
+   * no-op (`() => {}`) in tests that should stay quiet.
+   */
+  readonly log?: (msg: string) => void;
 }
 
 export interface SyncExecutionResult {
@@ -93,6 +100,7 @@ export class SyncCoordinator {
 
     const errors: string[] = [];
     const conflicts: string[] = [];
+    const timer = createStageTimer(this.options.log ?? ((msg: string) => logger.info(msg)));
 
     // Stage 1: Preflight & Staging Orphan Cleanup
     await cleanupOrphanStagingFiles(this.options.vaultRoot);
@@ -165,6 +173,7 @@ export class SyncCoordinator {
           );
           inventory = changes.collected;
           incrementalLastSeq = changes.lastSeq;
+          timer.mark('inventory-incremental', `${inventory.length} changed docs`);
         } catch (err) {
           // Fail-safe: an opaque `since` token rejected by the remote (HTTP
           // 400), a network error, or any other _changes failure degrades to a
@@ -184,6 +193,7 @@ export class SyncCoordinator {
         this.options.databaseName,
         this.options.credentials
       );
+      timer.mark('inventory-full', `${inventory.length} docs`);
     }
 
     const authHeader =
@@ -211,6 +221,7 @@ export class SyncCoordinator {
     };
 
     const observations = await this.buildObservations(inventory, decodeOptions);
+    timer.mark('decode', `${observations.length} observations`);
 
     // Safety valve (Phase 3): `block` observations are decode failures the
     // planner cannot express as actions. In a full-inventory pass they are
@@ -230,6 +241,7 @@ export class SyncCoordinator {
     // Stage 3: Local Vault Scan
     const scanner = new VaultScanner();
     const localFiles = await scanner.scanVault(this.options.vaultRoot);
+    timer.mark('scan', `${localFiles.size} local files`);
 
     // Read local file contents into memory for push execution
     const localBytesMap = new Map<string, Uint8Array>();
@@ -256,6 +268,7 @@ export class SyncCoordinator {
     // Stage 4: Safe Reconciliation & Planning
     const actions = buildSyncPlan(observations, localFiles, provenanceMap, localBytesMap);
     const serializedPlan = serializeSyncPlan(actions);
+    timer.mark('plan', `${actions.length} actions`);
 
     for (const action of actions) {
       if (action.kind === 'conflict') {
@@ -467,6 +480,7 @@ export class SyncCoordinator {
       // failure. An incremental pass persists the `_changes` `last_seq`
       // consumed by this pass; a full-inventory pass persists the caller's
       // `updateSeq` (probe-time snapshot), never the incremental token.
+      timer.mark('apply', `${appliedCount} actions applied`);
       const seqToPersist = incrementalLastSeq ?? this.options.updateSeq;
       if (seqToPersist) {
         checkpointRepo.saveCheckpoint({

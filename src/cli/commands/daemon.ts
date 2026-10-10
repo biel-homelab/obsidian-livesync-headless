@@ -318,6 +318,9 @@ export async function runDaemonCommand(options: DaemonCommandOptions): Promise<n
     readOnly: !effectiveWrite,
     skipInitialCatchUp: autoArmJustPulled,
     fetch: options.fetch,
+    // Phase 4.3: per-stage timing lines go to stderr (AGENTS.md: logs to
+    // stderr, command output to stdout).
+    log: (msg) => writeStderr(`${msg}\n`),
   });
 
   let shutdownExitCode = EXIT_CODES.SUCCESS;

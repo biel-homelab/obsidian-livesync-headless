@@ -47,13 +47,13 @@
 
 ## Phase 4 — Safety & operability
 
-- [ ] P4.1 Auto-arm: validate remote readability + passphrase feasibility BEFORE
+- [x] P4.1 Auto-arm: validate remote readability + passphrase feasibility BEFORE
       `cleanupLocalVault`/`cleanupLocalState`; abort before any cleanup when pull
       plan contains block actions.
-- [ ] P4.2 Unit tests: cleanup never runs when passphrase missing; cleanup never
+- [x] P4.2 Unit tests: cleanup never runs when passphrase missing; cleanup never
       runs when block actions present.
-- [ ] P4.3 Add per-stage timing logs (probe / inventory / decode / scan / apply).
-- [ ] P4.4 Full test suite + mixed-client interop tests green.
+- [x] P4.3 Add per-stage timing logs (probe / inventory / decode / scan / apply).
+- [x] P4.4 Full test suite + mixed-client interop tests green.
 
 ## Validation (cross-phase)
 

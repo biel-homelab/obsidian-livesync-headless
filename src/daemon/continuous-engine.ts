@@ -11,6 +11,7 @@ import { CheckpointWindow } from './checkpoint-window.js';
 import { FileWorkerPool } from './file-worker-pool.js';
 import { FileReconciler } from './file-reconciler.js';
 import { SyncCoordinator } from '../domain/sync-coordinator.js';
+import { createStageTimer } from '../diagnostics/stage-timer.js';
 import type { WriteCapability, ArmedSyncCapability } from '../security/capabilities.js';
 import { isWriteCapability, isArmedSyncCapability } from '../security/capabilities.js';
 
@@ -48,6 +49,11 @@ export interface ContinuousEngineOptions {
    * and manual scans are unaffected — only the initial pass is skipped.
    */
   readonly skipInitialCatchUp?: boolean;
+  /**
+   * Optional stage-timing sink (Phase 4.3). When omitted, catch-up timing
+   * lines are suppressed (tests stay quiet by default).
+   */
+  readonly log?: (msg: string) => void;
 }
 
 export class ContinuousEngine extends EventEmitter {
@@ -294,6 +300,7 @@ export class ContinuousEngine extends EventEmitter {
   }
 
   private async executeCatchUpPass(): Promise<void> {
+    const catchUpTimer = this.options.log ? createStageTimer(this.options.log) : null;
     // Data-safety note: a stored checkpoint only proves the remote was at this
     // update_seq at some point — it does NOT prove the local vault reflects it
     // (a crash can land between file writes and the checkpoint commit). So the
@@ -330,6 +337,7 @@ export class ContinuousEngine extends EventEmitter {
 
     if (this.activeCapability) {
       const result = await this.syncCoordinator.sync(this.activeCapability);
+      catchUpTimer?.mark('catch-up', `${result.appliedActions} actions applied`);
       if (!result.ok && result.conflicts.length > 0) {
         this.emit('conflicts', result.conflicts);
       }
@@ -367,6 +375,7 @@ export class ContinuousEngine extends EventEmitter {
         fetch: this.options.fetch,
       });
       const result = await readOnlyCoordinator.sync();
+      catchUpTimer?.mark('catch-up', `${result.appliedActions} actions applied`);
       if (!result.ok && result.conflicts.length > 0) {
         this.emit('conflicts', result.conflicts);
       }

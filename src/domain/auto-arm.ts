@@ -27,8 +27,10 @@ import {
   decodeNoteLeaf,
   isNoteType,
   isReservedChunkId,
+  looksEncryptedString,
   type DecodeOptions,
 } from '../livesync/decode-adapter.js';
+import { createStageTimer } from '../diagnostics/stage-timer.js';
 import {
   buildRecoverablePullPlan,
   observationFromDecodeFailure,
@@ -231,17 +233,30 @@ export class AutoArmCoordinator {
     }
   }
 
-  async executeReadOnlyPullAndMaterialize(
+  /**
+   * Pure read phase of the auto-arm pull (Phase 4.1): inventory the remote,
+   * decode every note leaf, and build the pull plan — without touching the
+   * local vault, state database, or remote. Throws nothing for block
+   * conditions; the plan itself carries them so the caller can abort BEFORE
+   * any destructive cleanup.
+   *
+   * Also fails fast when the remote is encrypted (strict ciphertext or `e_`
+   * flags) but no passphrase is configured: decoding every doc just to
+   * rediscover that fact would be wasted work, and the resulting
+   * `DECRYPT_FAILED` blocks are exactly what this phase must catch before
+   * cleanup.
+   */
+  async planReadOnlyPull(
     config: LoadedConfig,
     guardedFetch: typeof globalThis.fetch,
     probeResult: RemoteProbeResult,
-    negotiation: NegotiationResult
+    negotiation: NegotiationResult,
+    log: (msg: string) => void = () => {}
   ): Promise<{ success: boolean; actions: PullAction[]; error?: string }> {
+    const timer = createStageTimer(log);
     const rawUrl = new URL(config.remote.url);
     const allowedBaseUrl = new URL(`${rawUrl.protocol}//${rawUrl.host}`);
     const databaseName = config.remote.database;
-    const vaultRoot = config.resolvedVaultPath;
-    const statePath = config.resolvedStatePath;
     const credentials =
       config.remote.username || config.resolvedSecrets.remotePassword
         ? {
@@ -256,6 +271,7 @@ export class AutoArmCoordinator {
       databaseName,
       credentials
     );
+    timer.mark('inventory', `${inventory.length} docs`);
 
     const authHeader =
       credentials?.username || credentials?.password
@@ -286,6 +302,44 @@ export class AutoArmCoordinator {
         : encrypt
         ? 'v2'
         : undefined;
+
+    // Fail-closed BEFORE any cleanup: when the remote is encrypted (e_ flags
+    // or strict ciphertext shapes) and no passphrase is configured, every
+    // decode would fail anyway. Abort with a clear message now.
+    if (!config.resolvedSecrets.encryptionPassphrase) {
+      const remoteLooksEncrypted =
+        encrypt === true ||
+        Boolean(probeResult.syncParamsDoc?.pbkdf2salt) ||
+        inventory.some(
+          (item) =>
+            (item.kind === 'chunk' &&
+              (item.document.e_ === true ||
+                looksEncryptedString(item.document.data))) ||
+            (item.kind === 'document' &&
+              (item.document.e_ === true ||
+                looksEncryptedString(item.document.path) ||
+                looksEncryptedString(item.document.data)))
+        );
+      if (remoteLooksEncrypted) {
+        return {
+          success: false,
+          actions: [
+            {
+              kind: 'block',
+              id: 'encryption-passphrase',
+              code: 'MISSING_PASSPHRASE',
+              message:
+                'Remote database is encrypted but no encryption passphrase is configured; auto-arm cannot decode remote content',
+              suggestion:
+                'Set encryption.passphrase in your YAML config or LIVESYNC_ENCRYPTION_PASSPHRASE; local vault and state were NOT modified',
+            },
+          ],
+          error:
+            'Remote database is encrypted but no encryption passphrase is configured. ' +
+            'Auto-arm aborted BEFORE local cleanup; provide the passphrase and retry.',
+        };
+      }
+    }
 
     const decodeOptions: DecodeOptions = {
       handleFilenameCaseSensitive: Boolean(
@@ -343,12 +397,15 @@ export class AutoArmCoordinator {
         bytes: decoded.bytes,
       });
     }
+    timer.mark('decode', `${observations.length} observations`);
 
     const pullPlan = buildRecoverablePullPlan(
       observations,
       new Map(),
       new Map()
     );
+
+    timer.mark('plan', `${pullPlan.length} actions`);
 
     const blockActions = pullPlan.filter((a) => a.kind === 'block');
     if (blockActions.length > 0) {
@@ -358,6 +415,29 @@ export class AutoArmCoordinator {
         error: `Pull plan contained block actions: ${blockActions.map((b) => b.message).join('; ')}`,
       };
     }
+
+    return { success: true, actions: pullPlan };
+  }
+
+  /**
+   * Write phase of the auto-arm pull (Phase 4.1): materialize the already
+   * computed plan's decoded bytes into the vault, record provenance, save the
+   * admission record, and persist the checkpoint. Performs no remote reads —
+   * the plan is applied exactly as validated by {@link planReadOnlyPull}.
+   */
+  async applyReadOnlyPull(
+    config: LoadedConfig,
+    probeResult: RemoteProbeResult,
+    negotiation: NegotiationResult,
+    pullPlan: PullAction[],
+    log: (msg: string) => void = () => {}
+  ): Promise<{ success: boolean; error?: string }> {
+    const timer = createStageTimer(log);
+    const rawUrl = new URL(config.remote.url);
+    const allowedBaseUrl = new URL(`${rawUrl.protocol}//${rawUrl.host}`);
+    const databaseName = config.remote.database;
+    const vaultRoot = config.resolvedVaultPath;
+    const statePath = config.resolvedStatePath;
 
     // Materialize files and record provenance in state DB
     const db = openDatabase(statePath);
@@ -397,6 +477,7 @@ export class AutoArmCoordinator {
           });
         }
       }
+      timer.mark('apply', `${pullPlan.length} actions`);
 
       if (probeResult.databaseInfo.updateSeq) {
         checkpointRepo.saveCheckpoint({
@@ -409,7 +490,32 @@ export class AutoArmCoordinator {
       db.close();
     }
 
-    return { success: true, actions: pullPlan };
+    return { success: true };
+  }
+
+  async executeReadOnlyPullAndMaterialize(
+    config: LoadedConfig,
+    guardedFetch: typeof globalThis.fetch,
+    probeResult: RemoteProbeResult,
+    negotiation: NegotiationResult
+  ): Promise<{ success: boolean; actions: PullAction[]; error?: string }> {
+    // Backward-compatible wrapper: plan (pure read) then apply (writes).
+    const planResult = await this.planReadOnlyPull(
+      config,
+      guardedFetch,
+      probeResult,
+      negotiation
+    );
+    if (!planResult.success) {
+      return planResult;
+    }
+    const applyResult = await this.applyReadOnlyPull(
+      config,
+      probeResult,
+      negotiation,
+      planResult.actions
+    );
+    return { ...applyResult, actions: planResult.actions };
   }
 
   async validateSynchronization(
@@ -510,6 +616,7 @@ export class AutoArmCoordinator {
         : undefined;
 
     // 1. Probe & negotiate first
+    const probeTimer = createStageTimer(log);
     let probeResult: RemoteProbeResult;
     try {
       probeResult = await probeRemoteDatabase(
@@ -518,6 +625,7 @@ export class AutoArmCoordinator {
         databaseName,
         credentials
       );
+      probeTimer.mark('probe', `${probeResult.databaseInfo.docCount} docs`);
     } catch (err) {
       return {
         success: false,
@@ -582,20 +690,50 @@ export class AutoArmCoordinator {
     }
 
     log(`[auto-arm] Trigger condition detected (${trigger.code}): ${trigger.reason}`);
-    log(`[auto-arm] Cleaning up local vault and state database...`);
 
-    // 3. Cleanup local vault and state
-    await this.cleanupLocalVault(vaultRoot);
-    await this.cleanupLocalState(statePath);
-
-    log(`[auto-arm] Executing read-only synchronization from remote...`);
-
-    // 4. Read-only pull
-    const pullResult = await this.executeReadOnlyPullAndMaterialize(
+    // Phase 4.1 ordering guarantee: validate remote readability (inventory +
+    // decode + plan) BEFORE any destructive cleanup. The live incident had the
+    // daemon wipe-then-fail on every restart when the remote was unreadable
+    // (e.g. missing passphrase for an encrypted DB). The vault and state DB
+    // are only touched once the pull plan is proven feasible (no block
+    // actions, encryption resolvable).
+    log(`[auto-arm] Planning read-only synchronization from remote (fail-closed pre-validation)...`);
+    const planResult = await this.planReadOnlyPull(
       config,
       guardedFetch,
       probeResult,
-      negotiation
+      negotiation,
+      log
+    );
+
+    if (!planResult.success) {
+      return {
+        success: false,
+        triggered: true,
+        triggerCode: trigger.code,
+        triggerReason: trigger.reason,
+        error: `Auto-arm aborted BEFORE local cleanup; pull plan is not feasible: ${planResult.error}`,
+      };
+    }
+
+    log(
+      `[auto-arm] Pull plan is feasible (${planResult.actions.length} actions). Cleaning up local vault and state database...`
+    );
+
+    // Cleanup local vault and state — only after the plan phase succeeded.
+    await this.cleanupLocalVault(vaultRoot);
+    await this.cleanupLocalState(statePath);
+
+    log(`[auto-arm] Applying validated pull plan...`);
+
+    // Apply the already-computed plan (materialize from decoded bytes — no
+    // second inventory).
+    const pullResult = await this.applyReadOnlyPull(
+      config,
+      probeResult,
+      negotiation,
+      planResult.actions,
+      log
     );
 
     if (!pullResult.success) {
