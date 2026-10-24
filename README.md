@@ -44,7 +44,7 @@ docker run -d \
   -e LIVESYNC_COUCHDB_PASSWORD="secure_couchdb_password" \
   -e LIVESYNC_ENCRYPTION_PASSPHRASE="my_e2ee_passphrase" \
   -e LIVESYNC_MODE="auto-arm" \
-  ghcr.io/gmcouto/obsidian-livesync-headless:latest
+  ghcr.io/biel-homelab/obsidian-livesync-headless:latest
 # Note: /vault mounts the Obsidian vault; /data stores the SQLite state database
 ```
 
@@ -56,7 +56,7 @@ docker run -d \
 ```yaml
 services:
   livesync:
-    image: ghcr.io/gmcouto/obsidian-livesync-headless:latest
+    image: ghcr.io/biel-homelab/obsidian-livesync-headless:latest
     container_name: obsidian-livesync
     restart: unless-stopped
     user: "1000:1000"                         # Or match your host UID:GID (e.g., "${UID}:${GID}")
@@ -91,7 +91,7 @@ Compile the application into a standalone binary requiring zero host dependencie
 
 ```bash
 # Clone and install dev dependencies
-git clone https://github.com/gmcouto/obsidian-livesync-headless.git
+git clone https://github.com/biel-homelab/obsidian-livesync-headless.git
 cd obsidian-livesync-headless
 npm ci
 
